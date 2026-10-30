@@ -1042,3 +1042,15 @@ def handle_seek_bar_thumbnails_toggle(main_window: "MainWindow", enabled: bool):
             scroll_area.adjustSize()
             scroll_area.updateGeometry()
         thumb.update()
+
+
+def handle_target_thumbnail_size_change(
+    main_window: "MainWindow", new_value: str, *args
+) -> None:
+    """Resize target media cards and regenerate thumbnails at the new size."""
+    try:
+        from app.ui.widgets.actions import target_media_actions
+
+        target_media_actions.apply_target_thumbnail_size(main_window, new_value)
+    except Exception as exc:
+        print(f"[WARN] Could not apply target thumbnail size '{new_value}': {exc}")

@@ -73,15 +73,25 @@ class ThumbnailManager:
     _JPEG_USER_COMMENT_TAG = 0x9286
     _JPEG_USER_COMMENT_PREFIX = b"ASCII\x00\x00\x00"
 
-    def __init__(self, thumbnail_dir: str = ".thumbnails"):
+    def __init__(
+        self,
+        thumbnail_dir: str = ".thumbnails",
+        max_width: int = 140,
+        max_height: int = 140,
+    ):
         """
         Initializes the ThumbnailManager.
 
         Args:
             thumbnail_dir (str): The name of the directory to store thumbnails,
                                  created in the current working directory.
+            max_width / max_height (int): Bounding box the cached thumbnail is
+                                 scaled into. Larger target-media previews use a
+                                 separate manager (and directory) per size.
         """
         self.thumbnail_dir = os.path.join(os.getcwd(), thumbnail_dir)
+        self.max_width = int(max_width)
+        self.max_height = int(max_height)
         self._lock = threading.Lock()
         self._ensure_directory()
 
@@ -242,7 +252,10 @@ class ThumbnailManager:
 
         height, width, _ = frame.shape
         width, height = get_scaled_resolution(
-            media_width=width, media_height=height, max_height=140, max_width=140
+            media_width=width,
+            media_height=height,
+            max_height=self.max_height,
+            max_width=self.max_width,
         )
 
         width, height = max(1, width), max(1, height)

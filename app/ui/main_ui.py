@@ -693,6 +693,29 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.scan_progress_dialog.setAutoReset(False)
         self.scan_progress_dialog.close()
 
+        self._install_usability_features()
+
+    def _install_usability_features(self):
+        """Status-bar processing speed/ETA, processed-media ticks and menu shortcuts."""
+        from app.ui.widgets.actions import shortcut_actions, target_media_actions
+
+        self.processingStatsLabel = QtWidgets.QLabel("", self)
+        self.processingStatsLabel.setObjectName("processingStatsLabel")
+        self.processingStatsLabel.setToolTip(
+            "Processing speed (rolling average) and estimated time remaining"
+        )
+        self.statusBar().addPermanentWidget(self.processingStatsLabel)
+        self.video_processor.processing_stopped_signal.connect(
+            lambda: self.processingStatsLabel.setText("")
+        )
+
+        target_media_actions.get_processed_store(self)
+        self.video_processor.output_saved_signal.connect(
+            partial(target_media_actions.on_output_saved, self)
+        )
+
+        shortcut_actions.apply_menu_shortcuts(self)
+
     def _configure_output_folder_controls(self):
         style = self.style()
         closed_folder_icon = style.standardIcon(

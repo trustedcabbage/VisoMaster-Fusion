@@ -30,6 +30,79 @@ _EMBED_LIST_HEIGHT = 140
 _TARGET_MEDIA_BATCH_SIZE = 24
 _TARGET_MEDIA_BATCH_INTERVAL_MS = 1
 
+# --- Target media thumbnail size (Settings > Misc > Target Media Thumbnail Size) ---
+TARGET_THUMBNAIL_SIZE_DEFAULT = "Default (96x96)"
+TARGET_THUMBNAIL_SIZE_OPTIONS = [
+    TARGET_THUMBNAIL_SIZE_DEFAULT,
+    "160x90",
+    "256x144",
+    "320x180",
+    "480x270",
+    "640x360",
+    "960x540",
+    "1280x720",
+]
+# Room below the picture for the two-line file name plus card margins.
+_TARGET_CARD_EXTRA_HEIGHT = 40
+_TARGET_CARD_EXTRA_WIDTH = 6
+_DEFAULT_TARGET_THUMBNAIL_SCALE = (70, 70)
+
+
+def parse_target_thumbnail_size(label: str | None) -> tuple[int, int] | None:
+    """'640x360' -> (640, 360). None for the default/unknown value."""
+    if not label or label == TARGET_THUMBNAIL_SIZE_DEFAULT:
+        return None
+    try:
+        width_text, height_text = str(label).lower().split("x", 1)
+        width, height = int(width_text.strip()), int(height_text.strip())
+    except ValueError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return min(width, 1280), min(height, 720)
+
+
+def target_button_size_for(label: str | None) -> tuple[int, int]:
+    size = parse_target_thumbnail_size(label)
+    if size is None:
+        return _TARGET_BUTTON_SIZE
+    width, height = size
+    return width + _TARGET_CARD_EXTRA_WIDTH, height + _TARGET_CARD_EXTRA_HEIGHT
+
+
+def _get_target_button_size(main_window: "MainWindow") -> tuple[int, int]:
+    control = getattr(main_window, "control", {}) or {}
+    return target_button_size_for(control.get("TargetThumbnailSizeSelection"))
+
+
+def get_target_thumbnail_request(main_window: "MainWindow", label: str | None = None):
+    """(ThumbnailManager, QImage scale) to use for target media thumbnails.
+
+    The default size keeps the shared 140px cache. Larger sizes get their own
+    cache directory per size so small and large previews never overwrite each
+    other.
+    """
+    if label is None:
+        label = (getattr(main_window, "control", {}) or {}).get(
+            "TargetThumbnailSizeSelection"
+        )
+    size = parse_target_thumbnail_size(label)
+    if size is None:
+        return main_window.thumbnail_manager, _DEFAULT_TARGET_THUMBNAIL_SCALE
+    managers = getattr(main_window, "_target_thumbnail_managers", None)
+    if managers is None:
+        managers = {}
+        main_window._target_thumbnail_managers = managers
+    manager = managers.get(size)
+    if manager is None:
+        manager = misc_helpers.ThumbnailManager(
+            thumbnail_dir=os.path.join(".thumbnails", f"{size[0]}x{size[1]}"),
+            max_width=size[0],
+            max_height=size[1],
+        )
+        managers[size] = manager
+    return manager, size
+
 
 def _get_target_media_batch_size(pending_count: int) -> int:
     # Adaptive batch sizing: small queue keeps UI very responsive, large queue
@@ -330,7 +403,7 @@ def add_media_thumbnail_button(
         ]
 
     if buttonClass == widget_components.TargetMediaCardButton:
-        button_size = QtCore.QSize(*_TARGET_BUTTON_SIZE)
+        button_size = QtCore.QSize(*_get_target_button_size(main_window))
     else:
         button_size = QtCore.QSize(*_get_face_button_size(main_window))
 
@@ -349,6 +422,14 @@ def add_media_thumbnail_button(
 
     if buttonClass == widget_components.TargetMediaCardButton:
         button.set_thumbnail_pixmap(pixmap)
+        if not kwargs.get("is_webcam"):
+            from app.ui.widgets.actions import target_media_actions
+
+            try:
+                store = target_media_actions.get_processed_store(main_window)
+                button.set_processed(store.is_processed(button.media_path))
+            except Exception as exc:  # the tick is cosmetic; never block loading
+                print(f"[WARN] Processed-media lookup failed: {exc}")
     else:
         button.setIcon(QtGui.QIcon(pixmap))
         button.setIconSize(
@@ -459,7 +540,7 @@ def initialize_media_list_widgets(main_window: "MainWindow"):
         main_window.face_thumbnail_button_size = _FACE_BUTTON_SIZE
 
     for listWidget, button_size_tuple in [
-        (main_window.targetVideosList, _TARGET_BUTTON_SIZE),
+        (main_window.targetVideosList, _get_target_button_size(main_window)),
         (main_window.targetFacesList, _get_face_button_size(main_window)),
         (main_window.inputFacesList, _get_face_button_size(main_window)),
     ]:
@@ -730,6 +811,15 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
     if not main_window.target_videos:
         return False
 
+    if getattr(main_window, "is_batch_processing", False):
+        common_widget_actions.create_and_show_toast_message(
+            main_window,
+            "Batch Running",
+            "Target media can't be cleared while a batch is running.",
+            style_type="warning",
+        )
+        return False
+
     if not main_window.control.get("SkipClearConfirmationToggle", False):
         confirmed = _confirm_panel_clear(
             main_window,
@@ -749,6 +839,7 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
         card_actions.clear_target_faces(main_window, refresh_frame=False)
 
     main_window.target_videos.clear()
+    getattr(main_window, "target_media_multi_selection", set()).clear()
     main_window.selected_video_button = None
     _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
     main_window.last_target_media_folder_path = ""
@@ -1051,7 +1142,17 @@ def show_shortcuts(main_window: "MainWindow"):
         "<b>X</b> : Face Compare<br>"
         "<b>Right Click</b> : Viewport menu (Fit to View, 100% Zoom, Save Image)<br>"
         "<br>"
+        "<b><u>Target Media:</u></b><br>"
+        "<b>Ctrl+Click</b> : Add/remove an item from the selection<br>"
+        "<b>Shift+Click</b> : Select a range<br>"
+        "<b>Right Click</b> : Media menu (applies to the selection)<br>"
     )
+    try:
+        from app.ui.widgets.actions import shortcut_actions
+
+        shortcuts_text += shortcut_actions.build_shortcuts_table_html(main_window)
+    except Exception as exc:
+        print(f"[WARN] Could not build menu shortcut table: {exc}")
 
     main_window.display_messagebox_signal.emit(
         "Shortcuts",
