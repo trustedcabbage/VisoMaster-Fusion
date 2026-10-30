@@ -20,6 +20,10 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.processing_rate import (
+    ProcessingRateMeter,
+    format_processing_stats,
+)
 from app.ui.widgets.actions import (
     graphics_view_actions,
     video_control_actions,
@@ -996,6 +1000,7 @@ class MediaPipeline(QObject):
         self._fps_window_frames = 0
         self._display_fps_ema = 0.0
         self._set_playback_fps_text(0.0)
+        self._reset_processing_stats()
 
     def _update_playback_fps_display(self, now_sec: float | None = None) -> None:
         """Counts displayed frames and refreshes the readout ~1.3x per second.
@@ -1022,6 +1027,50 @@ class MediaPipeline(QObject):
         self._set_playback_fps_text(self._display_fps_ema)
         self._fps_window_start_sec = now
         self._fps_window_frames = 0
+
+    def _reset_processing_stats(self) -> None:
+        meter = getattr(self, "_processing_rate_meter", None)
+        if meter is None:
+            meter = ProcessingRateMeter(window_sec=3.0)
+            self._processing_rate_meter = meter
+        meter.reset()
+        self._processing_stats_last_update = 0.0
+        label = getattr(self.main_window, "processingStatsLabel", None)
+        if label is not None:
+            label.setText("")
+
+    def _update_processing_stats(
+        self, frame_number: int, now_sec: float | None = None
+    ) -> None:
+        """Rolling processed-frames/sec readout (+ ETA while recording) in the status bar."""
+        meter = getattr(self, "_processing_rate_meter", None)
+        if meter is None:
+            self._reset_processing_stats()
+            meter = self._processing_rate_meter
+        now = time.perf_counter() if now_sec is None else float(now_sec)
+        meter.tick(now)
+        if now - getattr(self, "_processing_stats_last_update", 0.0) < 0.5:
+            return
+        self._processing_stats_last_update = now
+        label = getattr(self.main_window, "processingStatsLabel", None)
+        if label is None:
+            return
+        is_recording = bool(
+            getattr(self.vp, "recording", False)
+            or getattr(self.vp, "is_processing_segments", False)
+        )
+        remaining = None
+        eta = None
+        if is_recording and getattr(self.vp, "file_type", None) == "video":
+            end_frame = getattr(self.vp, "current_segment_end_frame", None)
+            if end_frame is None:
+                end_frame = getattr(self.vp, "max_frame_number", 0) or 0
+            remaining = max(0, int(end_frame) - int(frame_number))
+            eta = meter.eta_seconds(remaining)
+        prefix = "Recording" if is_recording else "Processing"
+        label.setText(
+            f"{prefix}: " + format_processing_stats(meter.fps(), remaining, eta)
+        )
 
     def start_metronome(self, target_fps: float, is_first_start: bool = True) -> None:
         """Starts the hyper-precise Qt Timer that pulls completed frames and updates the UI."""
@@ -1365,6 +1414,7 @@ class MediaPipeline(QObject):
             self.main_window, pixmap, slider_display_frame
         )
         self._update_playback_fps_display()
+        self._update_processing_stats(frame_number_to_display)
 
         self.main_window.models_processor.check_deferred_unloads(
             frame_number_to_display

@@ -49,6 +49,24 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 
+def _emit_output_saved(processor, final_file_path: str) -> None:
+    """Tell the UI which source produced a saved output (drives the green tick).
+
+    Never raises: a failed notification must not break saving."""
+    try:
+        source_path = getattr(processor, "media_path", None)
+        if not source_path or getattr(processor, "file_type", None) not in (
+            "video",
+            "image",
+        ):
+            return
+        signal = getattr(processor, "output_saved_signal", None)
+        if signal is not None:
+            signal.emit(str(source_path), str(final_file_path))
+    except Exception as exc:
+        print(f"[WARN] Could not record processed media: {exc}")
+
+
 class VideoProcessor(QObject):
     """
     Manages all video, image, and webcam processing pipelines.
@@ -75,6 +93,8 @@ class VideoProcessor(QObject):
     processing_stopped_signal = Signal()  # Unified signal for any processing stop
     processing_heartbeat_signal = Signal()  # Emits periodically to show liveness
     fatal_processing_error_signal = Signal(str)
+    # (source_media_path, output_file_path) emitted after an output video is written
+    output_saved_signal = Signal(str, str)
 
     def __init__(self, main_window: "MainWindow", num_threads=2):
         """
@@ -2626,6 +2646,7 @@ class VideoProcessor(QObject):
                         "Video Saved",
                         f"Saved video to file: {final_file_path}",
                     )
+                    _emit_output_saved(self, final_file_path)
                 except Exception as e:
                     print(f"[ERROR] Audio merge failed: {e}")
                     if self.temp_file and os.path.exists(self.temp_file):
@@ -2643,6 +2664,7 @@ class VideoProcessor(QObject):
                                 "Video Saved",
                                 f"Saved video to file (without audio): {final_file_path}",
                             )
+                            _emit_output_saved(self, final_file_path)
                         else:
                             self.main_window.display_messagebox_signal.emit(
                                 "Recording Error",
@@ -3359,6 +3381,7 @@ class VideoProcessor(QObject):
                     "Video Saved",
                     f"Saved video to file: {final_file_path}",
                 )
+                _emit_output_saved(self, final_file_path)
 
             # 7. Reset state
             self.segments_to_process = []
