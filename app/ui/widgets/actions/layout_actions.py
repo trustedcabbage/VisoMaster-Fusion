@@ -716,6 +716,26 @@ def set_up_menu_actions(main_window: "MainWindow"):
         main_window.menuEdit.addSeparator()
         main_window.menuEdit.addAction(main_window.actionEdit_ResetParameters)
 
+    if not hasattr(main_window, "actionEdit_SelectAllTargetMedia"):
+        main_window.actionEdit_SelectAllTargetMedia = QtGui.QAction(
+            "Select All Target Media", main_window
+        )
+        main_window.actionEdit_ClearTargetMediaSelection = QtGui.QAction(
+            "Clear Target Media Selection", main_window
+        )
+        main_window.actionEdit_ScanProcessedMedia = QtGui.QAction(
+            "Mark Processed Media from Output Folder", main_window
+        )
+        main_window.actionEdit_ClearJobList = QtGui.QAction(
+            "Clear Job List…", main_window
+        )
+        main_window.menuEdit.addSeparator()
+        main_window.menuEdit.addAction(main_window.actionEdit_SelectAllTargetMedia)
+        main_window.menuEdit.addAction(main_window.actionEdit_ClearTargetMediaSelection)
+        main_window.menuEdit.addAction(main_window.actionEdit_ScanProcessedMedia)
+        main_window.menuEdit.addSeparator()
+        main_window.menuEdit.addAction(main_window.actionEdit_ClearJobList)
+
     if not hasattr(main_window, "actionHelp_QuickStartGuide"):
         main_window.actionHelp_QuickStartGuide = QtGui.QAction(
             "Quick Start Guide", main_window
@@ -828,6 +848,20 @@ def set_up_menu_actions(main_window: "MainWindow"):
     )
     main_window.actionHelp_About.triggered.connect(
         partial(list_view_actions.show_about, main_window)
+    )
+    from app.ui.widgets.actions import job_manager_actions, target_media_actions
+
+    main_window.actionEdit_SelectAllTargetMedia.triggered.connect(
+        partial(target_media_actions.select_all_target_media, main_window)
+    )
+    main_window.actionEdit_ClearTargetMediaSelection.triggered.connect(
+        partial(target_media_actions.clear_target_media_selection, main_window)
+    )
+    main_window.actionEdit_ScanProcessedMedia.triggered.connect(
+        partial(target_media_actions.scan_output_folder_for_processed, main_window)
+    )
+    main_window.actionEdit_ClearJobList.triggered.connect(
+        partial(job_manager_actions.clear_job_list, main_window)
     )
     main_window._menu_actions_setup_installed = True
 
