@@ -1348,6 +1348,102 @@ def save_job_workspace(
 # --- UI Setup and Signal Connections ---
 
 
+def trash_job_files(jobs_dir: Path, trash=send2trash) -> tuple[int, list[str]]:
+    """Move every saved job (*.json) in jobs_dir to the recycle bin.
+
+    Returns (moved_count, failure_messages)."""
+    moved = 0
+    failures: list[str] = []
+    if not jobs_dir.exists():
+        return moved, failures
+    for job_file in sorted(jobs_dir.glob("*.json")):
+        try:
+            trash(str(job_file))
+            moved += 1
+        except Exception as e:  # keep going; report all failures at the end
+            failures.append(f"{job_file.stem}: {e}")
+    return moved, failures
+
+
+def clear_job_list(main_window: "MainWindow") -> bool:
+    """Move all saved jobs to the recycle bin (asks first unless
+    'Turn OFF warning messages' is enabled)."""
+    if _is_job_processor_running(main_window):
+        QMessageBox.warning(
+            main_window,
+            "Job Queue Running",
+            "Stop the job queue before clearing the job list.",
+        )
+        return False
+
+    job_names = list_jobs(main_window)
+    if not job_names:
+        common_widget_actions.create_and_show_toast_message(
+            main_window, "Job List", "The job list is already empty."
+        )
+        return False
+
+    if not main_window.control.get("SkipClearConfirmationToggle", False):
+        confirm = QMessageBox.question(
+            main_window,
+            "Clear Job List",
+            f"Move all {len(job_names)} saved job(s) to the Recycle Bin?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return False
+
+    moved, failures = trash_job_files(get_jobs_dir(main_window))
+    refresh_job_list(main_window)
+    if failures:
+        QMessageBox.warning(
+            main_window,
+            "Clear Job List",
+            "Some jobs could not be moved to the Recycle Bin:\n" + "\n".join(failures),
+        )
+    if moved:
+        common_widget_actions.create_and_show_toast_message(
+            main_window, "Job List Cleared", f"{moved} job(s) moved to Recycle Bin."
+        )
+    return moved > 0
+
+
+def _show_job_list_context_menu(main_window: "MainWindow", point) -> None:
+    job_list = main_window.jobQueueList
+    menu = QtWidgets.QMenu(job_list)
+    selected = get_selected_jobs(main_window)
+    running = _is_job_processor_running(main_window)
+    for text, slot, enabled in (
+        ("Load Job", lambda: load_job(main_window), len(selected) == 1 and not running),
+        (
+            "Process Selected",
+            lambda: process_selected_job(main_window),
+            bool(selected) and not running,
+        ),
+        (
+            "Delete Selected",
+            lambda: delete_job(main_window),
+            bool(selected) and not running,
+        ),
+        (None, None, None),
+        ("Refresh", lambda: refresh_job_list(main_window), True),
+        (
+            "Clear Job List…",
+            lambda: clear_job_list(main_window),
+            job_list.count() > 0 and not running,
+        ),
+    ):
+        if text is None:
+            menu.addSeparator()
+            continue
+        action = menu.addAction(text)
+        action.triggered.connect(slot)
+        action.setEnabled(enabled)
+    menu.exec(job_list.viewport().mapToGlobal(point))
+    menu.deleteLater()
+
+
 def _is_job_processor_running(main_window: "MainWindow") -> bool:
     job_processor = getattr(main_window, "job_processor", None)
     return bool(
@@ -1571,6 +1667,10 @@ def connect_job_manager_signals(main_window: "MainWindow"):
     if main_window.jobQueueList:
         main_window.jobQueueList.itemSelectionChanged.connect(
             lambda: update_job_manager_buttons(main_window)
+        )
+        main_window.jobQueueList.setContextMenuPolicy(Qt.CustomContextMenu)
+        main_window.jobQueueList.customContextMenuRequested.connect(
+            lambda point: _show_job_list_context_menu(main_window, point)
         )
 
 

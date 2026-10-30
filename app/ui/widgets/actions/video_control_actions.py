@@ -5,6 +5,7 @@ from functools import partial
 import os
 from pathlib import Path
 import traceback
+import time
 
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QMenu
@@ -2655,6 +2656,13 @@ def save_current_frame_to_file(main_window: "MainWindow"):
                 pil_image.save(save_filename, "JPEG", quality=95)
             else:
                 pil_image.save(save_filename, "PNG")
+            target_media_actions = _load_target_media_actions()
+            if target_media_actions is not None:
+                target_media_actions.mark_media_processed(
+                    main_window,
+                    str(main_window.video_processor.media_path),
+                    save_filename,
+                )
             common_widget_actions.create_and_show_toast_message(
                 main_window,
                 "Image Saved",
@@ -2670,7 +2678,30 @@ def save_current_frame_to_file(main_window: "MainWindow"):
         )
 
 
-def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
+def _load_target_media_actions():
+    """Processed-media/batch-lock helpers; optional so a missing module never
+    stops saving or batch processing."""
+    try:
+        from app.ui.widgets.actions import target_media_actions
+    except ImportError as exc:
+        print(f"[WARN] Target media helpers unavailable: {exc}")
+        return None
+    return target_media_actions
+
+
+def _format_batch_eta(seconds: float) -> str:
+    try:
+        from app.helpers.processing_rate import format_eta
+    except ImportError:
+        return f"{int(seconds)}s"
+    return format_eta(seconds)
+
+
+def process_batch_images(
+    main_window: "MainWindow",
+    process_all_faces: bool,
+    media_paths: list[str] | None = None,
+):
     """
     Processes a batch of images and/or videos from the target list.
 
@@ -2682,7 +2713,15 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     - Processes BOTH images and videos.
     - Images: Applies current UI settings (target faces, inputs) to the image.
     - Videos: Applies current UI settings (markers, inputs, etc.) by running a full 'record' operation.
+
+    'media_paths' limits the batch to those target items (e.g. the multi-selection).
+    Settings > Misc > 'Batch: Skip Already Processed' leaves out items with a green tick.
     """
+    target_media_actions = _load_target_media_actions()
+
+    if getattr(main_window, "is_batch_processing", False) is True:
+        return
+
     # 1. Check if output folder is set
     if not main_window.outputFolderLineEdit.text():
         common_widget_actions.create_and_show_messagebox(
@@ -2697,6 +2736,20 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     media_files_to_process = []  # List of tuples: (media_path, file_type)
     num_images = 0
     num_videos = 0
+    skipped_processed = 0
+    allowed_paths = (
+        {os.path.normcase(os.path.abspath(p)) for p in media_paths}
+        if media_paths is not None
+        else None
+    )
+    skip_processed = bool(main_window.control.get("BatchSkipProcessedToggle", False))
+    if skip_processed and target_media_actions is None:
+        skip_processed = False
+    processed_store = (
+        target_media_actions.get_processed_store(main_window)
+        if skip_processed
+        else None
+    )
 
     # Iterate through the TargetVideosList to find items
     for i in range(main_window.targetVideosList.count()):
@@ -2705,8 +2758,20 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         if not widget:
             continue
 
-        file_type = widget.file_type
-        media_path = widget.media_path
+        file_type = getattr(widget, "file_type", None)
+        media_path = getattr(widget, "media_path", None)
+        if allowed_paths is not None and (
+            not media_path
+            or os.path.normcase(os.path.abspath(media_path)) not in allowed_paths
+        ):
+            continue
+        if (
+            skip_processed
+            and file_type in ("image", "video")
+            and processed_store.is_processed(media_path)
+        ):
+            skipped_processed += 1
+            continue
 
         if process_all_faces:
             # "All Faces" mode only processes images
@@ -2727,7 +2792,12 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         common_widget_actions.create_and_show_messagebox(
             main_window,
             "No Media Found",
-            "No compatible images (or videos) found in the target list to process.",
+            "No compatible images (or videos) found in the target list to process."
+            + (
+                f"\n\n{skipped_processed} already-processed item(s) were skipped."
+                if skipped_processed
+                else ""
+            ),
             main_window,
         )
         return
@@ -2774,6 +2844,11 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
             "Proceed with batch swap?"
         )
 
+    if skipped_processed:
+        confirm_msg += (
+            f"\n\n({skipped_processed} already-processed item(s) will be skipped.)"
+        )
+
     reply = QtWidgets.QMessageBox.question(
         main_window,
         confirm_title,
@@ -2803,7 +2878,12 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         len(media_files_to_process),
         main_window,
     )
-    progress_dialog.setWindowModality(QtCore.Qt.WindowModal)
+    non_blocking = target_media_actions is not None and bool(
+        main_window.control.get("NonBlockingBatchToggle", True)
+    )
+    progress_dialog.setWindowModality(
+        QtCore.Qt.NonModal if non_blocking else QtCore.Qt.WindowModal
+    )
     progress_dialog.setWindowTitle("Batch Processing Media")
     progress_dialog.setValue(0)
     progress_dialog.show()
@@ -2811,13 +2891,24 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     processed_count = 0
     failed_count = 0
     main_window.is_batch_processing = True
+    if non_blocking:
+        # Only lock what would interfere with the batch; the rest of the app stays usable.
+        target_media_actions.set_batch_ui_locked(main_window, True)
+    batch_started = time.perf_counter()
+    total_items = len(media_files_to_process)
 
     try:
         # 7. Processing Loop
         for i, (media_path, file_type) in enumerate(media_files_to_process):
             # Update progress and check for cancellation
             progress_dialog.setValue(i)
-            progress_dialog.setLabelText(f"Processing: {os.path.basename(media_path)}")
+            eta_text = ""
+            if i > 0:
+                per_item = (time.perf_counter() - batch_started) / i
+                eta_text = f"  ·  ETA {_format_batch_eta(per_item * (total_items - i))}"
+            progress_dialog.setLabelText(
+                f"Processing {i + 1}/{total_items}: {os.path.basename(media_path)}{eta_text}"
+            )
             QtWidgets.QApplication.processEvents()  # Keep UI responsive
 
             if progress_dialog.confirmedCanceled():
@@ -2956,6 +3047,10 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                         else:
                             pil_image.save(save_filename, "PNG")
                         processed_count += 1
+                        if target_media_actions is not None:
+                            target_media_actions.mark_media_processed(
+                                main_window, media_path, save_filename
+                            )
                     else:
                         raise Exception("Could not generate output filename.")
 
@@ -3022,6 +3117,8 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
 
     finally:
         main_window.is_batch_processing = False
+        if non_blocking:
+            target_media_actions.set_batch_ui_locked(main_window, False)
         # 8. Close the progress dialog
         progress_dialog.close_without_confirmation()
 
