@@ -30,6 +30,10 @@ BATCH_CONFLICTING_WIDGETS = (
     "buttonMediaPlay",
     "buttonMediaRecord",
     "saveImageButton",
+    "playerSaveImageButton",
+    "playerFindFacesButton",
+    "playerSwapButton",
+    "playerEditButton",
     "batchImageButton",
     "batchallImageButton",
     "findTargetFacesButton",
@@ -329,6 +333,12 @@ def add_current_media_to_job(main_window: MainWindow) -> None:
     job_manager_actions.prompt_job_name(main_window)
 
 
+def _add_selected_to_jobs(main_window: MainWindow, buttons) -> None:
+    from app.ui.widgets.actions import job_queue_actions
+
+    job_queue_actions.batch_add_targets_to_jobs(main_window, buttons)
+
+
 def batch_process_buttons(main_window: MainWindow, buttons, all_faces: bool):
     from app.ui.widgets.actions import video_control_actions
 
@@ -383,6 +393,11 @@ def build_target_media_context_menu(main_window: MainWindow, button) -> QtWidget
         "Add to job…",
         partial(add_current_media_to_job, main_window),
         is_current and count == 1 and not batch_running,
+    )
+    add(
+        "Add selected to Jobs…" + suffix,
+        partial(_add_selected_to_jobs, main_window, file_targets),
+        file_targets and not batch_running,
     )
     add(
         "Batch process" + suffix + " (current config)",

@@ -70,6 +70,39 @@ def target_button_size_for(label: str | None) -> tuple[int, int]:
     return width + _TARGET_CARD_EXTRA_WIDTH, height + _TARGET_CARD_EXTRA_HEIGHT
 
 
+def step_target_thumbnail_size_label(current: str | None, direction: int) -> str:
+    """Move one step through TARGET_THUMBNAIL_SIZE_OPTIONS (direction +1/-1)."""
+    options = TARGET_THUMBNAIL_SIZE_OPTIONS
+    try:
+        index = options.index(current or TARGET_THUMBNAIL_SIZE_DEFAULT)
+    except ValueError:
+        index = 0
+    index = max(0, min(len(options) - 1, index + int(direction)))
+    return options[index]
+
+
+def apply_thumbnail_size_label(main_window: "MainWindow", label: str) -> None:
+    """Set the thumbnail size setting, sync the Settings widget, and resize cards."""
+    from app.ui.widgets.actions import common_actions, target_media_actions
+
+    if not label:
+        label = TARGET_THUMBNAIL_SIZE_DEFAULT
+    control = getattr(main_window, "control", None)
+    if control is not None:
+        control["TargetThumbnailSizeSelection"] = label
+    widget = (getattr(main_window, "parameter_widgets", {}) or {}).get(
+        "TargetThumbnailSizeSelection"
+    )
+    if widget is not None:
+        try:
+            widget.enable_refresh_frame = False
+            common_actions._set_single_widget_value(widget, label)
+            widget.enable_refresh_frame = True
+        except Exception:
+            pass
+    target_media_actions.apply_target_thumbnail_size(main_window, label)
+
+
 def _get_target_button_size(main_window: "MainWindow") -> tuple[int, int]:
     control = getattr(main_window, "control", {}) or {}
     return target_button_size_for(control.get("TargetThumbnailSizeSelection"))
@@ -1121,6 +1154,9 @@ def show_shortcuts(main_window: "MainWindow"):
         "<b>Space</b> : Play/Stop<br>"
         "<b>R</b> : Record start/stop<br>"
         "<b>S</b> : Swap face<br>"
+        "<b>J</b> : Add target(s) to Job<br>"
+        "<b>Ctrl+Shift+P</b> : Save Image<br>"
+        "<b>Ctrl+,</b> : Preferences<br>"
         "<br>"
         "<b><u>Seeking:</u></b><br>"
         "<b>V</b> : Advance 1 frame<br>"
@@ -1145,6 +1181,10 @@ def show_shortcuts(main_window: "MainWindow"):
         "<b><u>Target Media:</u></b><br>"
         "<b>Ctrl+Click</b> : Add/remove an item from the selection<br>"
         "<b>Shift+Click</b> : Select a range<br>"
+        "<b>Click+Drag</b> : Rubber-band select<br>"
+        "<b>Shift+Drag</b> : Add rubber-band selection<br>"
+        "<b>Ctrl+Drag</b> : Add rubber-band selection<br>"
+        "<b>Ctrl+Mouse Wheel</b> : Zoom target thumbnails<br>"
         "<b>Right Click</b> : Media menu (applies to the selection)<br>"
     )
     try:

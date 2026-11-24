@@ -40,6 +40,14 @@ RESERVED_SHORTCUTS: dict[str, str] = {
     "W": "Next marker",
     "Q": "Previous marker",
     "S": "Swap faces",
+    "J": "Add target(s) to Job",
+}
+
+# Single-key shortcuts handled in MainWindow.keyPressEvent. They stay listed
+# in Help and shortcuts.json, but are not set as QAction shortcuts (which would
+# fire in addition to keyPressEvent).
+KEYPRESS_HANDLED_SHORTCUTS: dict[str, str] = {
+    "actionEdit_AddToJob": "J",
 }
 
 # (attribute name on MainWindow, default shortcut, menu, description)
@@ -109,6 +117,9 @@ DEFAULT_MENU_SHORTCUT_SPECS: tuple[tuple[str, str, str, str], ...] = (
         "Mark processed media from output folder",
     ),
     ("actionEdit_ClearJobList", "Ctrl+Shift+Del", "Edit", "Clear job list"),
+    ("actionEdit_AddToJob", "J", "Edit", "Add target(s) to Job"),
+    ("actionEdit_Preferences", "Ctrl+,", "Edit", "Preferences"),
+    ("actionFile_SaveImage", "Ctrl+Shift+P", "File", "Save Image"),
     # View
     (
         "actionViewToggle_target_media",
@@ -123,6 +134,7 @@ DEFAULT_MENU_SHORTCUT_SPECS: tuple[tuple[str, str, str, str], ...] = (
     ("actionView_FitToView", "Ctrl+0", "View", "Fit to view"),
     ("actionView_100Zoom", "Ctrl+1", "View", "100% zoom"),
     ("actionView_FaceCompare", "X", "View", "Face compare"),
+    ("actionView_ResetLayout", "Ctrl+Alt+0", "View", "Reset layout"),
     # Help
     ("actionHelp_QuickStartGuide", "F1", "Help", "Quick start guide"),
     ("actionHelp_UserManual", "Shift+F1", "Help", "User manual"),
@@ -159,6 +171,19 @@ def load_shortcut_overrides(path: str | Path) -> dict[str, str]:
     return {str(k): str(v or "") for k, v in data.items()}
 
 
+def save_shortcut_overrides(path: str | Path, overrides: dict[str, str]) -> None:
+    """Write a ``shortcuts.json`` object. Empty values clear a shortcut."""
+    payload = {str(k): str(v or "") for k, v in (overrides or {}).items()}
+    path = Path(path)
+    if not payload:
+        if path.exists():
+            path.unlink()
+        return
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
 def resolve_shortcuts(
     defaults: Mapping[str, str],
     overrides: Mapping[str, str] | None = None,
@@ -191,6 +216,11 @@ def resolve_shortcuts(
             result[name] = ""
             continue
         if seq in reserved_norm:
+            handled = KEYPRESS_HANDLED_SHORTCUTS.get(name)
+            if handled and normalize_sequence(handled) == seq:
+                used[seq] = name
+                result[name] = seq
+                continue
             warnings.append(f"{name}: '{seq}' is a reserved hotkey; shortcut removed.")
             result[name] = ""
             continue
@@ -237,7 +267,22 @@ def apply_menu_shortcuts(main_window: MainWindow) -> dict[str, str]:
         action = _find_action(main_window, name)
         if action is None:
             continue
-        action.setShortcut(QtGui.QKeySequence(seq) if seq else QtGui.QKeySequence())
+        keypress_default = KEYPRESS_HANDLED_SHORTCUTS.get(name)
+        user_override = overrides.get(name) if name in overrides else None
+        user_disabled = user_override is not None and not normalize_sequence(
+            user_override
+        )
+        # Keep J (etc.) on keyPressEvent only when the resolved shortcut is still that key.
+        if user_disabled:
+            action.setShortcut(QtGui.QKeySequence())
+            seq = ""
+        elif keypress_default and (
+            not seq or normalize_sequence(seq) == normalize_sequence(keypress_default)
+        ):
+            action.setShortcut(QtGui.QKeySequence())
+            seq = keypress_default
+        else:
+            action.setShortcut(QtGui.QKeySequence(seq) if seq else QtGui.QKeySequence())
         action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
         action.setShortcutVisibleInContextMenu(True)
         # Make sure the shortcut fires even if its menu was never opened.
@@ -258,7 +303,10 @@ def build_shortcuts_table_html(main_window: MainWindow) -> str:
     current_menu = None
     for name, seq in applied.items():
         if not seq:
-            continue
+            keypress_default = KEYPRESS_HANDLED_SHORTCUTS.get(name)
+            if not keypress_default:
+                continue
+            seq = keypress_default
         if name.startswith("mask:"):
             action = _find_action(main_window, name)
             menu = "View"

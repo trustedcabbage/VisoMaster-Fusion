@@ -765,6 +765,8 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
         for target_face in data.get("target_faces_data", {}).values():
             required_face_ids.update(target_face.get("assigned_input_faces", []))
             required_embed_ids.update(target_face.get("assigned_merged_embeddings", []))
+        required_face_ids.update(data.get("pending_assigned_input_faces") or [])
+        required_embed_ids.update(data.get("pending_assigned_merged_embeddings") or [])
 
         # Check face files
         all_input_faces_in_job = data.get("input_faces_data", {})
@@ -1777,6 +1779,13 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
         # During job restore, suppress intermediate refreshes so the first processed
         # frame sees fully restored controls instead of stale pre-load state.
 
+        # Keep assigned sources selected when this job will auto-detect faces.
+        from app.ui.widgets.actions import job_queue_actions
+
+        if job_queue_actions.job_needs_auto_detect(job_data):
+            main_window.control["KeepInputToggle"] = True
+            main_window.control["AutoSwapToggle"] = True
+
         # 1. Select the media.
         selected_media_id = job_data.get("selected_media_id", False)
         if (
@@ -1807,6 +1816,9 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
 
         # 4. Load markers.
         _load_job_markers(main_window, job_data)
+
+        if job_queue_actions.job_needs_auto_detect(job_data):
+            job_queue_actions.auto_detect_and_assign_for_job(main_window, job_data)
 
         # Calculate assigned_input_embedding here for KV injection
         for face_id, target_face_button in main_window.target_faces.items():
@@ -1907,7 +1919,7 @@ def handle_batch_completion(main_window: "MainWindow"):
 
     # Report skipped jobs (if any)
     if skipped_jobs:
-        skipped_message = "The following jobs were skipped due to errors:\n\n"
+        skipped_message = "The following jobs were skipped:\n\n"
         skipped_message += "\n".join(f"- {job_error}" for job_error in skipped_jobs)
         QMessageBox.warning(main_window, "Skipped Jobs", skipped_message)
 
@@ -2270,6 +2282,22 @@ class JobProcessor(QThread):
                 self.skipped_jobs.append(f"{job_name}: {skip_reason}")
                 continue  # Skip this job
 
+            from app.ui.widgets.actions import job_queue_actions, target_media_actions
+
+            skip_processed = bool(
+                (getattr(self.main_window, "control", {}) or {}).get(
+                    "JobSkipProcessedToggle", False
+                )
+            )
+            if skip_processed:
+                store = target_media_actions.get_processed_store(self.main_window)
+                if job_queue_actions.should_skip_processed_job(
+                    data, store.is_processed, True
+                ):
+                    print(f"[INFO] Skipping already processed job '{job_name}'.")
+                    self.skipped_jobs.append(f"{job_name}: already processed")
+                    continue
+
             # --- 2. Job is valid, now COLLECT unique assets ---
             # (No need to check os.path.exists here, validation already passed)
 
@@ -2290,6 +2318,10 @@ class JobProcessor(QThread):
                 required_embed_ids.update(
                     target_face.get("assigned_merged_embeddings", [])
                 )
+            required_face_ids.update(data.get("pending_assigned_input_faces") or [])
+            required_embed_ids.update(
+                data.get("pending_assigned_merged_embeddings") or []
+            )
 
             # Collect input faces
             all_input_faces_in_job: Dict[str, Dict[str, str]] = data.get(

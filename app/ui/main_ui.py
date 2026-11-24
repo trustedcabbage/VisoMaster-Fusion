@@ -237,6 +237,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.targetVideosHeightSpinBox.setRange(0, max_height)
 
     def initialize_widgets(self):
+        layout_actions.configure_dock_system(self)
+
         # Initialize QListWidget for target media
         self.targetVideosList.setFlow(QtWidgets.QListWidget.LeftToRight)
         self.targetVideosList.setWrapping(True)
@@ -716,6 +718,76 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         shortcut_actions.apply_menu_shortcuts(self)
 
+        self._install_player_action_buttons()
+
+        from app.ui.widgets import parameter_tab_icons
+
+        parameter_tab_icons.apply_parameters_tab_header_mode(self)
+        parameter_tab_icons.install_parameters_tab_header_menu(self)
+
+        layout_actions.capture_default_dock_state(self)
+
+    def _install_player_action_buttons(self):
+        """Always-visible Save Image / Find Faces / Swap / Edit on the player bar."""
+        if getattr(self, "_player_action_buttons_installed", False):
+            return
+        layout = getattr(self, "mediaControlsMainLayout", None)
+        if layout is None:
+            return
+
+        def _make(name: str, text: str, tooltip: str, checkable: bool = False):
+            button = QtWidgets.QPushButton(text, self)
+            button.setObjectName(name)
+            button.setFlat(True)
+            button.setToolTip(tooltip)
+            button.setCheckable(checkable)
+            layout.addWidget(button)
+            button.show()
+            return button
+
+        def _set_checked_silent(button, checked: bool) -> None:
+            if button.isChecked() != checked:
+                button.blockSignals(True)
+                button.setChecked(checked)
+                button.blockSignals(False)
+
+        self.playerSaveImageButton = _make(
+            "playerSaveImageButton", "Save Image", "Save the current frame to the output folder"
+        )
+        self.playerFindFacesButton = _make(
+            "playerFindFacesButton", "Find Faces", "Detect faces in the current frame"
+        )
+        self.playerSwapButton = _make(
+            "playerSwapButton", "Swap", "Toggle face swap", checkable=True
+        )
+        self.playerEditButton = _make(
+            "playerEditButton", "Edit", "Toggle face editor", checkable=True
+        )
+
+        self.playerSaveImageButton.clicked.connect(self.saveImageButton.click)
+        self.playerFindFacesButton.clicked.connect(self.findTargetFacesButton.click)
+
+        self.playerSwapButton.clicked.connect(
+            lambda _c=False: self.swapfacesButton.click()
+            if self.swapfacesButton.isChecked() != self.playerSwapButton.isChecked()
+            else None
+        )
+        self.playerEditButton.clicked.connect(
+            lambda _c=False: self.editFacesButton.click()
+            if self.editFacesButton.isChecked() != self.playerEditButton.isChecked()
+            else None
+        )
+        # Keep visual state in sync if the Faces-panel buttons are used instead.
+        self.swapfacesButton.toggled.connect(
+            lambda checked: _set_checked_silent(self.playerSwapButton, checked)
+        )
+        self.editFacesButton.toggled.connect(
+            lambda checked: _set_checked_silent(self.playerEditButton, checked)
+        )
+        _set_checked_silent(self.playerSwapButton, self.swapfacesButton.isChecked())
+        _set_checked_silent(self.playerEditButton, self.editFacesButton.isChecked())
+        self._player_action_buttons_installed = True
+
     def _configure_output_folder_controls(self):
         style = self.style()
         closed_folder_icon = style.standardIcon(
@@ -1156,6 +1228,13 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 video_control_actions.move_slider_to_nearest_marker(self, "previous")
             case QtCore.Qt.Key_S:
                 self.swapfacesButton.click()
+            case QtCore.Qt.Key_J:
+                from app.ui.widgets.actions import job_queue_actions, shortcut_actions
+
+                applied = getattr(self, "applied_menu_shortcuts", {}) or {}
+                seq = applied.get("actionEdit_AddToJob", "J")
+                if shortcut_actions.normalize_sequence(seq) == "J":
+                    job_queue_actions.add_to_job_from_shortcut(self)
 
     def closeEvent(self, event):
         print("[INFO] MainWindow: closeEvent called.")
@@ -1639,7 +1718,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             "target_media": self.input_Target_DockWidget,
             "input_faces": self.input_Faces_DockWidget,
             "jobs": self.jobManagerDockWidget,
-            "faces": self.facesPanelGroupBox,
+            "faces": getattr(self, "facesPanelDockWidget", None)
+            or self.facesPanelGroupBox,
             "parameters": self.controlOptionsDockWidget,
         }
         return panel_widgets[panel_key]
@@ -1671,6 +1751,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             ("jobs", self.jobManagerDockWidget),
             ("parameters", self.controlOptionsDockWidget),
         ]
+        faces_dock = getattr(self, "facesPanelDockWidget", None)
+        if faces_dock is not None:
+            dock_sync_specs.append(("faces", faces_dock))
         for panel_key, dock_widget in dock_sync_specs:
             dock_widget.visibilityChanged.connect(
                 lambda visible, key=panel_key: self._sync_panel_visibility_action(

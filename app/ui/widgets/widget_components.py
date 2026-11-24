@@ -288,26 +288,47 @@ class TargetMediaCardButton(CardButton):
         badge = self.processed_badge
         badge.move(max(0, self.width() - badge.width() - 4), 4)
 
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        # Ctrl/Shift + left click edits the multi-selection without loading media.
-        modifiers = event.modifiers()
-        if event.button() == QtCore.Qt.MouseButton.LeftButton and (
-            modifiers
-            & (
-                QtCore.Qt.KeyboardModifier.ControlModifier
-                | QtCore.Qt.KeyboardModifier.ShiftModifier
-            )
-        ):
-            from app.ui.widgets.actions import target_media_actions
+    def _target_videos_list(self):
+        mw = getattr(self, "main_window", None)
+        return getattr(mw, "targetVideosList", None) if mw is not None else None
 
-            target_media_actions.handle_target_media_modifier_click(
-                self.main_window,
-                self,
-                shift=bool(modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier),
-            )
-            event.accept()
-            return
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        # Left-click is owned by the list so a drag can become a rubber band
+        # instead of loading media. Right-click still opens the context menu.
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            list_widget = self._target_videos_list()
+            if list_widget is not None and hasattr(
+                list_widget, "begin_pointer_gesture"
+            ):
+                if list_widget.begin_pointer_gesture(event, self):
+                    self.grabMouse()
+                    event.accept()
+                    return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        list_widget = self._target_videos_list()
+        if list_widget is not None and hasattr(list_widget, "update_pointer_gesture"):
+            if getattr(list_widget, "_press_pos", None) is not None:
+                if list_widget.update_pointer_gesture(event, self):
+                    event.accept()
+                    return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self.mouseGrabber() is self:
+            self.releaseMouse()
+        list_widget = self._target_videos_list()
+        if (
+            event.button() == QtCore.Qt.MouseButton.LeftButton
+            and list_widget is not None
+            and hasattr(list_widget, "finish_pointer_gesture")
+            and getattr(list_widget, "_press_pos", None) is not None
+        ):
+            if list_widget.finish_pointer_gesture(event, self):
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
