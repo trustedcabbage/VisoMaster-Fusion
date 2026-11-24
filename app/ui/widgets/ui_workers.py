@@ -23,6 +23,44 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 
+class TargetThumbnailRefreshWorker(qtc.QThread):
+    """Regenerates target-media thumbnails at a new size (cached per size)."""
+
+    thumbnail_ready = qtc.Signal(str, QImage)
+
+    def __init__(self, main_window, items, thumbnail_manager, scale, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.items = list(items)  # (media_path, file_type, media_id)
+        self.thumbnail_manager = thumbnail_manager
+        self.scale = scale
+        self._running = True
+
+    def cancel(self) -> None:
+        self._running = False
+
+    def run(self) -> None:
+        for media_path, file_type, media_id in self.items:
+            if not self._running:
+                return
+            try:
+                image = common_widget_actions.extract_frame_as_image(
+                    self.main_window,
+                    media_path,
+                    file_type,
+                    cache_thumbnail=True,
+                    thumbnail_manager=self.thumbnail_manager,
+                    scale=self.scale,
+                )
+            except (
+                Exception
+            ) as exc:  # keep going; one bad file must not stop the refresh
+                print(f"[WARN] Thumbnail refresh failed for {media_path}: {exc}")
+                continue
+            if self._running and isinstance(image, QImage) and not image.isNull():
+                self.thumbnail_ready.emit(media_id, image)
+
+
 class TargetMediaLoaderWorker(qtc.QThread):
     # Define signals to emit when loading is done or if there are updates - changed to QImage
     thumbnail_ready = qtc.Signal(
@@ -186,6 +224,8 @@ class TargetMediaLoaderWorker(qtc.QThread):
                 file_type,
                 cache_thumbnail=True,
                 return_metadata=self.metadata_enabled,
+                thumbnail_manager=thumbnail_manager,
+                scale=thumbnail_scale,
             )
 
             if self.metadata_enabled:
@@ -198,6 +238,12 @@ class TargetMediaLoaderWorker(qtc.QThread):
 
             # Fallback for extraction failure to prevent UI progress bar hanging
             return (media_file_path, QImage(), "error", media_id, None)
+
+        from app.ui.widgets.actions import list_view_actions
+
+        thumbnail_manager, thumbnail_scale = (
+            list_view_actions.get_target_thumbnail_request(self.main_window)
+        )
 
         # Determine thread count safely, capping at 16 to avoid OS resource exhaustion
         max_workers = min(16, (os.cpu_count() or 1) + 4)

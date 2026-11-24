@@ -765,6 +765,8 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
         for target_face in data.get("target_faces_data", {}).values():
             required_face_ids.update(target_face.get("assigned_input_faces", []))
             required_embed_ids.update(target_face.get("assigned_merged_embeddings", []))
+        required_face_ids.update(data.get("pending_assigned_input_faces") or [])
+        required_embed_ids.update(data.get("pending_assigned_merged_embeddings") or [])
 
         # Check face files
         all_input_faces_in_job = data.get("input_faces_data", {})
@@ -1348,6 +1350,102 @@ def save_job_workspace(
 # --- UI Setup and Signal Connections ---
 
 
+def trash_job_files(jobs_dir: Path, trash=send2trash) -> tuple[int, list[str]]:
+    """Move every saved job (*.json) in jobs_dir to the recycle bin.
+
+    Returns (moved_count, failure_messages)."""
+    moved = 0
+    failures: list[str] = []
+    if not jobs_dir.exists():
+        return moved, failures
+    for job_file in sorted(jobs_dir.glob("*.json")):
+        try:
+            trash(str(job_file))
+            moved += 1
+        except Exception as e:  # keep going; report all failures at the end
+            failures.append(f"{job_file.stem}: {e}")
+    return moved, failures
+
+
+def clear_job_list(main_window: "MainWindow") -> bool:
+    """Move all saved jobs to the recycle bin (asks first unless
+    'Turn OFF warning messages' is enabled)."""
+    if _is_job_processor_running(main_window):
+        QMessageBox.warning(
+            main_window,
+            "Job Queue Running",
+            "Stop the job queue before clearing the job list.",
+        )
+        return False
+
+    job_names = list_jobs(main_window)
+    if not job_names:
+        common_widget_actions.create_and_show_toast_message(
+            main_window, "Job List", "The job list is already empty."
+        )
+        return False
+
+    if not main_window.control.get("SkipClearConfirmationToggle", False):
+        confirm = QMessageBox.question(
+            main_window,
+            "Clear Job List",
+            f"Move all {len(job_names)} saved job(s) to the Recycle Bin?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return False
+
+    moved, failures = trash_job_files(get_jobs_dir(main_window))
+    refresh_job_list(main_window)
+    if failures:
+        QMessageBox.warning(
+            main_window,
+            "Clear Job List",
+            "Some jobs could not be moved to the Recycle Bin:\n" + "\n".join(failures),
+        )
+    if moved:
+        common_widget_actions.create_and_show_toast_message(
+            main_window, "Job List Cleared", f"{moved} job(s) moved to Recycle Bin."
+        )
+    return moved > 0
+
+
+def _show_job_list_context_menu(main_window: "MainWindow", point) -> None:
+    job_list = main_window.jobQueueList
+    menu = QtWidgets.QMenu(job_list)
+    selected = get_selected_jobs(main_window)
+    running = _is_job_processor_running(main_window)
+    for text, slot, enabled in (
+        ("Load Job", lambda: load_job(main_window), len(selected) == 1 and not running),
+        (
+            "Process Selected",
+            lambda: process_selected_job(main_window),
+            bool(selected) and not running,
+        ),
+        (
+            "Delete Selected",
+            lambda: delete_job(main_window),
+            bool(selected) and not running,
+        ),
+        (None, None, None),
+        ("Refresh", lambda: refresh_job_list(main_window), True),
+        (
+            "Clear Job List…",
+            lambda: clear_job_list(main_window),
+            job_list.count() > 0 and not running,
+        ),
+    ):
+        if text is None:
+            menu.addSeparator()
+            continue
+        action = menu.addAction(text)
+        action.triggered.connect(slot)
+        action.setEnabled(enabled)
+    menu.exec(job_list.viewport().mapToGlobal(point))
+    menu.deleteLater()
+
+
 def _is_job_processor_running(main_window: "MainWindow") -> bool:
     job_processor = getattr(main_window, "job_processor", None)
     return bool(
@@ -1572,6 +1670,10 @@ def connect_job_manager_signals(main_window: "MainWindow"):
         main_window.jobQueueList.itemSelectionChanged.connect(
             lambda: update_job_manager_buttons(main_window)
         )
+        main_window.jobQueueList.setContextMenuPolicy(Qt.CustomContextMenu)
+        main_window.jobQueueList.customContextMenuRequested.connect(
+            lambda point: _show_job_list_context_menu(main_window, point)
+        )
 
 
 def refresh_job_list(main_window: "MainWindow"):
@@ -1677,6 +1779,13 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
         # During job restore, suppress intermediate refreshes so the first processed
         # frame sees fully restored controls instead of stale pre-load state.
 
+        # Keep assigned sources selected when this job will auto-detect faces.
+        from app.ui.widgets.actions import job_queue_actions
+
+        if job_queue_actions.job_needs_auto_detect(job_data):
+            main_window.control["KeepInputToggle"] = True
+            main_window.control["AutoSwapToggle"] = True
+
         # 1. Select the media.
         selected_media_id = job_data.get("selected_media_id", False)
         if (
@@ -1707,6 +1816,9 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
 
         # 4. Load markers.
         _load_job_markers(main_window, job_data)
+
+        if job_queue_actions.job_needs_auto_detect(job_data):
+            job_queue_actions.auto_detect_and_assign_for_job(main_window, job_data)
 
         # Calculate assigned_input_embedding here for KV injection
         for face_id, target_face_button in main_window.target_faces.items():
@@ -1807,7 +1919,7 @@ def handle_batch_completion(main_window: "MainWindow"):
 
     # Report skipped jobs (if any)
     if skipped_jobs:
-        skipped_message = "The following jobs were skipped due to errors:\n\n"
+        skipped_message = "The following jobs were skipped:\n\n"
         skipped_message += "\n".join(f"- {job_error}" for job_error in skipped_jobs)
         QMessageBox.warning(main_window, "Skipped Jobs", skipped_message)
 
@@ -2170,6 +2282,22 @@ class JobProcessor(QThread):
                 self.skipped_jobs.append(f"{job_name}: {skip_reason}")
                 continue  # Skip this job
 
+            from app.ui.widgets.actions import job_queue_actions, target_media_actions
+
+            skip_processed = bool(
+                (getattr(self.main_window, "control", {}) or {}).get(
+                    "JobSkipProcessedToggle", False
+                )
+            )
+            if skip_processed:
+                store = target_media_actions.get_processed_store(self.main_window)
+                if job_queue_actions.should_skip_processed_job(
+                    data, store.is_processed, True
+                ):
+                    print(f"[INFO] Skipping already processed job '{job_name}'.")
+                    self.skipped_jobs.append(f"{job_name}: already processed")
+                    continue
+
             # --- 2. Job is valid, now COLLECT unique assets ---
             # (No need to check os.path.exists here, validation already passed)
 
@@ -2190,6 +2318,10 @@ class JobProcessor(QThread):
                 required_embed_ids.update(
                     target_face.get("assigned_merged_embeddings", [])
                 )
+            required_face_ids.update(data.get("pending_assigned_input_faces") or [])
+            required_embed_ids.update(
+                data.get("pending_assigned_merged_embeddings") or []
+            )
 
             # Collect input faces
             all_input_faces_in_job: Dict[str, Dict[str, str]] = data.get(

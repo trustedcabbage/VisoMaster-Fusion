@@ -243,6 +243,23 @@ class TargetMediaCardButton(CardButton):
         )
         layout.addWidget(self.text_label, 0)
 
+        # Green tick shown on media that has already been processed/saved.
+        self.processed_badge = QtWidgets.QLabel("\u2714", self)
+        self.processed_badge.setObjectName("processedBadge")
+        self.processed_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.processed_badge.setFixedSize(18, 18)
+        self.processed_badge.setStyleSheet(
+            "QLabel#processedBadge {background-color: #2e9d3a; color: white;"
+            " border-radius: 9px; font-weight: bold; font-size: 11px;}"
+        )
+        self.processed_badge.setToolTip("Already processed / saved")
+        self.processed_badge.setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        self.processed_badge.hide()
+        self.is_processed = False
+        self.is_multi_selected = False
+
         self.clicked.connect(self.load_media)
 
         # Set the context menu policy to trigger the custom context menu on right-click
@@ -254,9 +271,69 @@ class TargetMediaCardButton(CardButton):
         self._thumbnail_pixmap = pixmap
         self._update_thumbnail_pixmap()
 
+    def set_processed(self, processed: bool) -> None:
+        self.is_processed = bool(processed)
+        self.processed_badge.setVisible(self.is_processed)
+        if self.is_processed:
+            self._position_processed_badge()
+            self.processed_badge.raise_()
+
+    def set_multi_selected(self, selected: bool) -> None:
+        self.is_multi_selected = bool(selected)
+        self.setStyleSheet(
+            "QPushButton {border: 2px solid #3daee9;}" if self.is_multi_selected else ""
+        )
+
+    def _position_processed_badge(self) -> None:
+        badge = self.processed_badge
+        badge.move(max(0, self.width() - badge.width() - 4), 4)
+
+    def _target_videos_list(self):
+        mw = getattr(self, "main_window", None)
+        return getattr(mw, "targetVideosList", None) if mw is not None else None
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        # Left-click is owned by the list so a drag can become a rubber band
+        # instead of loading media. Right-click still opens the context menu.
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            list_widget = self._target_videos_list()
+            if list_widget is not None and hasattr(
+                list_widget, "begin_pointer_gesture"
+            ):
+                if list_widget.begin_pointer_gesture(event, self):
+                    self.grabMouse()
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        list_widget = self._target_videos_list()
+        if list_widget is not None and hasattr(list_widget, "update_pointer_gesture"):
+            if getattr(list_widget, "_press_pos", None) is not None:
+                if list_widget.update_pointer_gesture(event, self):
+                    event.accept()
+                    return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self.mouseGrabber() is self:
+            self.releaseMouse()
+        list_widget = self._target_videos_list()
+        if (
+            event.button() == QtCore.Qt.MouseButton.LeftButton
+            and list_widget is not None
+            and hasattr(list_widget, "finish_pointer_gesture")
+            and getattr(list_widget, "_press_pos", None) is not None
+        ):
+            if list_widget.finish_pointer_gesture(event, self):
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_thumbnail_pixmap()
+        self._position_processed_badge()
 
     def _update_thumbnail_pixmap(self) -> None:
         if self._thumbnail_pixmap.isNull():
@@ -339,6 +416,16 @@ class TargetMediaCardButton(CardButton):
             main_window, "change target media"
         ):
             self._restore_pre_click_checked_state()
+            return
+        if getattr(main_window, "is_batch_processing", False):
+            # A non-blocking batch owns the video processor until it finishes.
+            self._restore_pre_click_checked_state()
+            common_widget_actions.create_and_show_toast_message(
+                main_window,
+                "Batch Running",
+                "Media can't be loaded while a batch is running. Cancel it from the status bar first.",
+                style_type="warning",
+            )
             return
 
         # Deselect the currently selected video
@@ -630,46 +717,19 @@ class TargetMediaCardButton(CardButton):
                 subprocess.run(["xdg-open", directory])
 
     def create_context_menu(self):
-        from app.ui.widgets.actions import list_view_actions
+        from app.ui.widgets.actions import target_media_actions
 
-        self.popMenu = QtWidgets.QMenu(self)
-        self.remove_action = QtGui.QAction("Remove from list", self)
-        self.remove_action.triggered.connect(self.remove_target_media_from_list)
-        self.popMenu.addAction(self.remove_action)
-
-        self.delete_action = QtGui.QAction("Delete file to recycle bin", self)
-        self.delete_action.triggered.connect(self.delete_target_media_to_trash)
-        self.popMenu.addAction(self.delete_action)
-
-        self.open_path_action = QtGui.QAction("Open file location", self)
-        self.open_path_action.triggered.connect(self.open_target_path_by_explorer)
-        self.popMenu.addAction(self.open_path_action)
-        self.popMenu.addSeparator()
-
-        self.clear_all_media_action = QtGui.QAction("Clear All Media", self)
-        self.clear_all_media_action.triggered.connect(
-            partial(list_view_actions.clear_all_target_media, self.main_window)
+        self.popMenu = target_media_actions.build_target_media_context_menu(
+            self.main_window, self
         )
-        self.popMenu.addAction(self.clear_all_media_action)
 
     def on_context_menu(self, point):
         # show context menu
         self.create_context_menu()
         try:
-            scan_active = video_control_actions.is_issue_scan_active(self.main_window)
-            self.remove_action.setEnabled(not scan_active)
-            self.delete_action.setEnabled(not scan_active)
-            self.clear_all_media_action.setEnabled(
-                bool(self.main_window.target_videos) and not scan_active
-            )
             self._exec_context_menu(point)
         finally:
-            self._release_context_menu(
-                "remove_action",
-                "delete_action",
-                "open_path_action",
-                "clear_all_media_action",
-            )
+            self._release_context_menu()
 
 
 class TargetFaceCardButton(CardButton):

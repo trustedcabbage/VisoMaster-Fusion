@@ -580,10 +580,12 @@ def add_widgets_to_tab_layout(
 
 
 def show_hide_faces_panel(main_window: "MainWindow", checked):
+    dock = getattr(main_window, "facesPanelDockWidget", None)
+    target = dock if dock is not None else main_window.facesPanelGroupBox
     if checked:
-        main_window.facesPanelGroupBox.show()
+        target.show()
     else:
-        main_window.facesPanelGroupBox.hide()
+        target.hide()
     fit_image_to_view_onchange(main_window)
 
 
@@ -716,6 +718,53 @@ def set_up_menu_actions(main_window: "MainWindow"):
         main_window.menuEdit.addSeparator()
         main_window.menuEdit.addAction(main_window.actionEdit_ResetParameters)
 
+    if not hasattr(main_window, "actionEdit_SelectAllTargetMedia"):
+        main_window.actionEdit_SelectAllTargetMedia = QtGui.QAction(
+            "Select All Target Media", main_window
+        )
+        main_window.actionEdit_ClearTargetMediaSelection = QtGui.QAction(
+            "Clear Target Media Selection", main_window
+        )
+        main_window.actionEdit_ScanProcessedMedia = QtGui.QAction(
+            "Mark Processed Media from Output Folder", main_window
+        )
+        main_window.actionEdit_ClearJobList = QtGui.QAction(
+            "Clear Job List…", main_window
+        )
+        main_window.menuEdit.addSeparator()
+        main_window.menuEdit.addAction(main_window.actionEdit_SelectAllTargetMedia)
+        main_window.menuEdit.addAction(main_window.actionEdit_ClearTargetMediaSelection)
+        main_window.menuEdit.addAction(main_window.actionEdit_ScanProcessedMedia)
+        main_window.menuEdit.addSeparator()
+        main_window.menuEdit.addAction(main_window.actionEdit_ClearJobList)
+
+    if not hasattr(main_window, "actionEdit_AddToJob"):
+        main_window.actionEdit_AddToJob = QtGui.QAction("Add to Job", main_window)
+        main_window.menuEdit.addSeparator()
+        main_window.menuEdit.addAction(main_window.actionEdit_AddToJob)
+        main_window.actionEdit_Preferences = QtGui.QAction("Preferences…", main_window)
+        main_window.menuEdit.addAction(main_window.actionEdit_Preferences)
+
+    if not hasattr(main_window, "actionFile_SaveImage"):
+        main_window.actionFile_SaveImage = QtGui.QAction("Save Image", main_window)
+        # Place just above Quit
+        if hasattr(main_window, "actionQuit"):
+            main_window.menuFile.insertAction(
+                main_window.actionQuit, main_window.actionFile_SaveImage
+            )
+            main_window.menuFile.insertSeparator(main_window.actionQuit)
+        else:
+            main_window.menuFile.addAction(main_window.actionFile_SaveImage)
+
+    if not hasattr(main_window, "actionView_ResetLayout"):
+        main_window.actionView_ResetLayout = QtGui.QAction("Reset Layout", main_window)
+        anchor = getattr(main_window, "actionView_Fullscreen_F11", None)
+        if anchor is not None:
+            main_window.menuView.insertAction(anchor, main_window.actionView_ResetLayout)
+            main_window.menuView.insertSeparator(anchor)
+        else:
+            main_window.menuView.addAction(main_window.actionView_ResetLayout)
+
     if not hasattr(main_window, "actionHelp_QuickStartGuide"):
         main_window.actionHelp_QuickStartGuide = QtGui.QAction(
             "Quick Start Guide", main_window
@@ -829,6 +878,35 @@ def set_up_menu_actions(main_window: "MainWindow"):
     main_window.actionHelp_About.triggered.connect(
         partial(list_view_actions.show_about, main_window)
     )
+    from app.ui.widgets.actions import job_manager_actions, target_media_actions
+
+    main_window.actionEdit_SelectAllTargetMedia.triggered.connect(
+        partial(target_media_actions.select_all_target_media, main_window)
+    )
+    main_window.actionEdit_ClearTargetMediaSelection.triggered.connect(
+        partial(target_media_actions.clear_target_media_selection, main_window)
+    )
+    main_window.actionEdit_ScanProcessedMedia.triggered.connect(
+        partial(target_media_actions.scan_output_folder_for_processed, main_window)
+    )
+    main_window.actionEdit_ClearJobList.triggered.connect(
+        partial(job_manager_actions.clear_job_list, main_window)
+    )
+    from app.ui.widgets.actions import job_queue_actions
+    from app.ui.widgets import preferences_dialog
+
+    main_window.actionEdit_AddToJob.triggered.connect(
+        lambda _checked=False: job_queue_actions.add_to_job_from_shortcut(main_window)
+    )
+    main_window.actionEdit_Preferences.triggered.connect(
+        lambda _checked=False: preferences_dialog.open_preferences_dialog(main_window)
+    )
+    main_window.actionFile_SaveImage.triggered.connect(
+        partial(video_control_actions.save_current_frame_to_file, main_window)
+    )
+    main_window.actionView_ResetLayout.triggered.connect(
+        lambda _checked=False: reset_dock_layout(main_window)
+    )
     main_window._menu_actions_setup_installed = True
 
 
@@ -843,6 +921,15 @@ def set_all_parameters_and_control_widgets_enabled(
     main_window.batchImageButton.setDisabled(disabled)
     main_window.batchallImageButton.setDisabled(disabled)
     main_window.findTargetFacesButton.setDisabled(disabled)
+    for name in (
+        "playerSaveImageButton",
+        "playerFindFacesButton",
+        "playerSwapButton",
+        "playerEditButton",
+    ):
+        button = getattr(main_window, name, None)
+        if button is not None:
+            button.setDisabled(disabled)
     main_window.clearTargetFacesButton.setDisabled(disabled)
     main_window.swapfacesButton.setDisabled(disabled)
     main_window.editFacesButton.setDisabled(disabled)
@@ -914,3 +1001,123 @@ def disable_all_parameters_and_control_widget(main_window: "MainWindow"):
 
 def enable_all_parameters_and_control_widget(main_window: "MainWindow"):
     set_all_parameters_and_control_widgets_enabled(main_window, True)
+
+
+
+_DOCK_AREA_MAP = {
+    "Bottom": QtCore.Qt.DockWidgetArea.BottomDockWidgetArea,
+    "Left": QtCore.Qt.DockWidgetArea.LeftDockWidgetArea,
+    "Right": QtCore.Qt.DockWidgetArea.RightDockWidgetArea,
+    "Top": QtCore.Qt.DockWidgetArea.TopDockWidgetArea,
+}
+
+_DOCK_MIN_SIZE = QtCore.QSize(180, 160)
+
+
+def _all_docks(main_window: "MainWindow") -> list:
+    docks = [
+        getattr(main_window, "input_Target_DockWidget", None),
+        getattr(main_window, "input_Faces_DockWidget", None),
+        getattr(main_window, "jobManagerDockWidget", None),
+        getattr(main_window, "controlOptionsDockWidget", None),
+        getattr(main_window, "facesPanelDockWidget", None),
+    ]
+    return [dock for dock in docks if dock is not None]
+
+
+def configure_dock_system(main_window: "MainWindow") -> None:
+    """Promote Faces/Embeddings to a dock and relax sizing on every dock."""
+    from PySide6.QtWidgets import QDockWidget, QMainWindow
+
+    if getattr(main_window, "facesPanelDockWidget", None) is None:
+        group = main_window.facesPanelGroupBox
+        layout = getattr(main_window, "verticalLayout", None)
+        if layout is not None:
+            layout.removeWidget(group)
+        dock = QDockWidget("Faces & Embeddings", main_window)
+        dock.setObjectName("facesPanelDockWidget")
+        dock.setAllowedAreas(QtCore.Qt.DockWidgetArea.AllDockWidgetAreas)
+        dock.setWidget(group)
+        main_window.facesPanelDockWidget = dock
+        main_window.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        group.setMinimumSize(QtCore.QSize(0, 160))
+
+    features = (
+        QDockWidget.DockWidgetFeature.DockWidgetMovable
+        | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        | QDockWidget.DockWidgetFeature.DockWidgetClosable
+    )
+    for dock in _all_docks(main_window):
+        dock.setFeatures(features)
+        dock.setAllowedAreas(QtCore.Qt.DockWidgetArea.AllDockWidgetAreas)
+        dock.setMinimumSize(_DOCK_MIN_SIZE)
+
+    main_window.setDockOptions(
+        QMainWindow.DockOption.AnimatedDocks
+        | QMainWindow.DockOption.AllowNestedDocks
+        | QMainWindow.DockOption.AllowTabbedDocks
+    )
+
+
+def capture_default_dock_state(main_window: "MainWindow") -> None:
+    try:
+        main_window._default_dock_state = main_window.saveState()
+    except Exception as exc:
+        print(f"[WARN] Could not capture default dock state: {exc}")
+        main_window._default_dock_state = None
+
+
+def reset_dock_layout(main_window: "MainWindow") -> None:
+    """Restore the startup dock arrangement and show all five docks."""
+    state = getattr(main_window, "_default_dock_state", None)
+    if state:
+        try:
+            main_window.restoreState(state)
+        except Exception as exc:
+            print(f"[WARN] Could not restore default dock state: {exc}")
+    for key in ("target_media", "input_faces", "jobs", "faces", "parameters"):
+        try:
+            main_window._set_panel_visibility(key, True)
+        except Exception:
+            pass
+    apply_faces_dock_area(
+        main_window,
+        (getattr(main_window, "control", {}) or {}).get(
+            "FacesDockDefaultAreaSelection", "Bottom"
+        ),
+        only_if_missing=False,
+        respect_current=False,
+    )
+    fit_image_to_view_onchange(main_window)
+
+
+def apply_faces_dock_area(
+    main_window: "MainWindow",
+    area_name: str,
+    only_if_missing: bool = False,
+    respect_current: bool = True,
+) -> None:
+    dock = getattr(main_window, "facesPanelDockWidget", None)
+    if dock is None:
+        return
+    area = _DOCK_AREA_MAP.get(str(area_name), QtCore.Qt.DockWidgetArea.BottomDockWidgetArea)
+    if only_if_missing:
+        # Old workspaces have no record of this dock; leave our default placement.
+        return
+    if respect_current and dock.isFloating():
+        return
+    main_window.addDockWidget(area, dock)
+
+
+def restore_docks_after_workspace(main_window: "MainWindow") -> None:
+    """Keep the new Faces dock visible if an old workspace state omitted it."""
+    dock = getattr(main_window, "facesPanelDockWidget", None)
+    if dock is None:
+        return
+    # If restoreState didn't hide it unexpectedly, we're done. If the panel
+    # should be visible according to saved checkbox state, show it.
+    visible = True
+    if hasattr(main_window, "panel_visibility_state"):
+        visible = bool(main_window.panel_visibility_state.get("faces", True))
+    if visible and dock.isHidden():
+        dock.show()

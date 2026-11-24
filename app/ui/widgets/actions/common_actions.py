@@ -620,6 +620,7 @@ def extract_frame_as_image(
     cache_thumbnail=True,
     scale: tuple[int, int] | None = (70, 70),
     return_metadata=False,
+    thumbnail_manager=None,
 ):
     """
     Extracts a frame from a media file and converts it to a QImage for thumbnails.
@@ -645,12 +646,13 @@ def extract_frame_as_image(
         # .scaled() returns a deep copy, completely decoupling from the numpy array memory!
         return q_img.scaled(*scale, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
+    if thumbnail_manager is None:
+        thumbnail_manager = main_window.thumbnail_manager
+
     # For images and videos, first check for a cached thumbnail.
     if file_type in ["image", "video"]:
         # We use the thumbnail_manager instance from the main_window.
-        thumbnail_path = main_window.thumbnail_manager.find_existing_thumbnail(
-            media_file_path
-        )
+        thumbnail_path = thumbnail_manager.find_existing_thumbnail(media_file_path)
 
         # Freshness check: if the source file has been modified more recently
         # than the cached thumbnail (e.g., the user re-recorded over the same
@@ -672,7 +674,7 @@ def extract_frame_as_image(
             if frame is not None:
                 q_image = convert_frame_to_image(frame)
                 if return_metadata:
-                    metadata = main_window.thumbnail_manager.get_thumbnail_metadata(
+                    metadata = thumbnail_manager.get_thumbnail_metadata(
                         thumbnail_path, media_file_path
                     )
                     if metadata is not None:
@@ -682,7 +684,7 @@ def extract_frame_as_image(
                             media_file_path, file_type
                         )
                         if metadata is not None:
-                            main_window.thumbnail_manager.create_thumbnail(
+                            thumbnail_manager.create_thumbnail(
                                 frame, media_file_path, metadata=metadata
                             )
                             return q_image, metadata
@@ -754,7 +756,7 @@ def extract_frame_as_image(
     if isinstance(frame, np.ndarray):
         # Create a new thumbnail in the cache for next time.
         if file_type != "webcam" and cache_thumbnail:
-            main_window.thumbnail_manager.create_thumbnail(
+            thumbnail_manager.create_thumbnail(
                 frame, media_file_path, metadata=metadata
             )
 

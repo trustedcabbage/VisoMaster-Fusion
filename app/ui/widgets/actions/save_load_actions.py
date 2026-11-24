@@ -1201,6 +1201,9 @@ def load_saved_workspace(
                     main_window._refresh_panel_visibility_state_from_widgets()
                 except Exception as e:
                     print(f"[WARN] Failed to restore dock layout: {e}")
+            from app.ui.widgets.actions import layout_actions as _layout_actions
+
+            _layout_actions.restore_docks_after_workspace(main_window)
 
             if needs_post_restore_frame_clamp:
                 QtCore.QTimer.singleShot(
